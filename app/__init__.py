@@ -1,0 +1,2 @@
+"""Wallyo Server Application Package."""
+
