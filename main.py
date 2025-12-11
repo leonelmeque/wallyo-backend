@@ -2,12 +2,11 @@
 
 from fastapi import FastAPI
 from dotenv import load_dotenv
+import os
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Import core configuration (this will validate required env vars on import)
-from app.core.config import settings  # noqa: E402
 from app.core.logger import logger  # noqa: E402
 
 # Import and register feature routers
@@ -22,7 +21,7 @@ app = FastAPI(
 
 # Log application startup
 logger.info("Starting Wallyo Server")
-logger.info(f"Log level: {settings.log_level}")
+logger.info(f"Log level: {os.getenv('LOG_LEVEL', 'INFO')}")
 
 # Register feature routers
 app.include_router(storage_router)
