@@ -1,11 +1,10 @@
 """Logging configuration for the application."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
-
-from app.core.config import settings
 
 
 def setup_logger(
@@ -25,13 +24,10 @@ def setup_logger(
     Returns:
         Configured logger instance
     """
-    # Get log level from parameter, env var, or default to INFO
-    level_str = log_level or getattr(settings, "log_level", "INFO")
+    level_str = log_level or os.getenv("LOG_LEVEL", "INFO")
     level = getattr(logging, level_str.upper(), logging.INFO)
-    
-    # Get log file from settings if not provided
     if log_file is None:
-        log_file = getattr(settings, "log_file", None)
+        log_file = os.getenv("LOG_FILE")
 
     # Create logger
     logger = logging.getLogger(name)
@@ -68,4 +64,3 @@ def setup_logger(
 
 # Create default logger instance
 logger = setup_logger()
-

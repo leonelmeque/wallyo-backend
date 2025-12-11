@@ -2,7 +2,7 @@
 
 from typing import Optional
 from supabase import create_client, Client
-from app.core.config import settings
+from app.core.config import get_settings
 
 # Lazy-initialized Supabase client
 _supabase_client: Optional[Client] = None
@@ -20,8 +20,9 @@ def get_supabase_client() -> Client:
     """
     global _supabase_client
     if _supabase_client is None:
+        s = get_settings()
         _supabase_client = create_client(
-            settings.supabase_url, settings.supabase_service_role_key
+            s.supabase_url, s.supabase_service_role_key
         )
     return _supabase_client
 
@@ -44,4 +45,3 @@ class _LazySupabase:
 
 # Module-level supabase object that lazily initializes
 supabase = _LazySupabase()
-
