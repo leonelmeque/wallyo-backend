@@ -194,8 +194,12 @@ class StorageService:
     def _extract_upload_token(result: dict) -> Optional[str]:
         if not isinstance(result, dict):
             return None
-
-        parsed_url = urlparse(result.get("signed_url") or result.get("signedURL") or "")
-        extracted_token = parse_qs(parsed_url.query).get("token")[0]
-
-        return extracted_token
+        if "token" in result:
+            value = result.get("token")
+            return value if isinstance(value, str) else None
+        signed_url = result.get("signed_url") or result.get("signedURL")
+        if not signed_url:
+            return None
+        parsed = urlparse(signed_url)
+        tokens = parse_qs(parsed.query).get("token")
+        return tokens[0] if tokens else None

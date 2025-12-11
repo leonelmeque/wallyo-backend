@@ -1,19 +1,20 @@
 from typing import Dict, Any, Optional
 from storage3.types import SignedUploadURL
 from supabase import StorageException, create_client
-from app.core.config import settings
 from app.core.logger import logger
+import os
 
 
 class StorageRepository:
     def __init__(self, bucket_name: str = "") -> None:
-        self.bucket_name = bucket_name or settings.bucket
+        self.bucket_name = bucket_name or os.getenv("SUPABASE_BACKUP_BUCKET", "user-backups")
         logger.debug(f"StorageRepository initialized with bucket: {self.bucket_name}")
 
     def _get_user_client(self, user_token: str):
-        from app.core.config import settings
+        from app.core.config import get_settings
 
-        if not settings.supabase_anon_key:
+        s = get_settings()
+        if not s.supabase_anon_key:
             error_msg = (
                 "SUPABASE_ANON_KEY is required for storage operations with RLS. "
                 "Please set it in your .env file. You can find it in Supabase Dashboard > API Settings."
@@ -21,7 +22,7 @@ class StorageRepository:
             logger.error(error_msg)
             raise ValueError(error_msg)
         logger.debug("Creating Supabase client with anon key and user token for RLS")
-        client = create_client(settings.supabase_url, settings.supabase_anon_key)
+        client = create_client(s.supabase_url, s.supabase_anon_key)
         client.auth.set_session(access_token=user_token, refresh_token="")
         return client
 
