@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from storage3.types import SignedUploadURL
 from supabase import StorageException, create_client
 from app.core.logger import logger
@@ -7,7 +7,9 @@ import os
 
 class StorageRepository:
     def __init__(self, bucket_name: str = "") -> None:
-        self.bucket_name = bucket_name or os.getenv("SUPABASE_BACKUP_BUCKET", "user-backups")
+        self.bucket_name = bucket_name or os.getenv(
+            "SUPABASE_BACKUP_BUCKET", "user-backups"
+        )
         logger.debug(f"StorageRepository initialized with bucket: {self.bucket_name}")
 
     def _get_user_client(self, user_token: str):
@@ -163,6 +165,106 @@ class StorageRepository:
             logger.error(f"Storage error: {error_msg}")
             raise Exception(error_msg)
         return result
+
+    def list_user_files(
+        self, user_id: str, user_token: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        List all files in a user's storage directory.
+
+        Args:
+            user_id: Supabase user UUID (used as directory prefix)
+            user_token: User's JWT token for RLS policy evaluation
+
+        Returns:
+            List of file objects with name, id, updated_at, created_at, metadata
+        """
+        if user_token:
+            supabase = self._get_user_client(user_token)
+        else:
+            from app.core.supabase import get_supabase_client
+
+            supabase = get_supabase_client()
+
+        logger.debug(
+            f"Listing files for user: {user_id} in bucket: {self.bucket_name}"
+        )
+
+        try:
+            result = supabase.storage.from_(self.bucket_name).list(path=user_id)
+            if isinstance(result, list):
+                logger.debug(f"Found {len(result)} files for user: {user_id}")
+                return result
+            return []
+        except StorageException as e:
+            error_detail = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
+            error_message = error_detail.get("message", "Unknown error")
+            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+
+            # Empty directory or not found is not an error
+            if (
+                error_code == "NoSuchKey"
+                or "not found" in error_message.lower()
+                or "does not exist" in error_message.lower()
+            ):
+                logger.debug(f"No files found for user: {user_id}")
+                return []
+
+            if "row-level security policy" in error_message or "RLS" in error_message:
+                error_msg = f"RLS policy violation: {error_message}. Check storage policies."
+            elif error_code == "NoSuchBucket" or "does not exist" in error_message:
+                error_msg = f"Bucket '{self.bucket_name}' does not exist."
+            else:
+                error_msg = f"Error listing files: {error_message} (code: {error_code})"
+
+            logger.error(f"Storage error: {error_msg}")
+            raise Exception(error_msg)
+
+    def delete_files(
+        self, paths: List[str], user_token: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Delete multiple files from storage.
+
+        Args:
+            paths: List of full paths to delete (e.g., ["user_id/file1.db.enc"])
+            user_token: User's JWT token for RLS policy evaluation
+
+        Returns:
+            List of deleted file objects
+        """
+        if not paths:
+            return []
+
+        if user_token:
+            supabase = self._get_user_client(user_token)
+        else:
+            from app.core.supabase import get_supabase_client
+
+            supabase = get_supabase_client()
+
+        logger.debug(
+            f"Deleting {len(paths)} files from bucket: {self.bucket_name}"
+        )
+
+        try:
+            result = supabase.storage.from_(self.bucket_name).remove(paths)
+            logger.debug(f"Successfully deleted {len(paths)} files")
+            return result if isinstance(result, list) else []
+        except StorageException as e:
+            error_detail = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
+            error_message = error_detail.get("message", "Unknown error")
+            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+
+            if "row-level security policy" in error_message or "RLS" in error_message:
+                error_msg = f"RLS policy violation: {error_message}. Check storage policies."
+            elif error_code == "NoSuchBucket" or "does not exist" in error_message:
+                error_msg = f"Bucket '{self.bucket_name}' does not exist."
+            else:
+                error_msg = f"Error deleting files: {error_message} (code: {error_code})"
+
+            logger.error(f"Storage error: {error_msg}")
+            raise Exception(error_msg)
 
     def __check_for_errors_in_create_signed_upload_result(
         self, result: SignedUploadURL

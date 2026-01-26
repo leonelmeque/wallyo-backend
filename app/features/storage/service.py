@@ -2,12 +2,16 @@
 
 import secrets
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 from urllib.parse import parse_qs, urlparse
 from app.core.logger import logger
 from app.features.storage.repository import StorageRepository
 from app.features.storage.schemas import PresignUploadRes, PresignDownloadRes
+
+# Backup cleanup constants
+MAX_BACKUPS = 3  # Cleanup triggers when user has this many or more
+KEEP_BACKUPS = 2  # Number of backups to keep after cleanup
 
 
 class StorageService:
@@ -75,6 +79,93 @@ class StorageService:
                 detail=f"Path must start with {expected_prefix}",
             )
 
+    def _sort_backups_by_timestamp(
+        self, backup_files: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Sort backup files by timestamp extracted from filename.
+
+        Args:
+            backup_files: List of file objects with 'name' field
+
+        Returns:
+            List sorted by timestamp (oldest first)
+
+        Filename format: {ISO-timestamp}-{random-hex}.db.enc
+        Example: 2025-01-26T12-30-45.123456+00-00-a1b2c3d4.db.enc
+        """
+
+        def extract_timestamp(file_obj: Dict[str, Any]) -> str:
+            name = file_obj.get("name", "")
+            try:
+                # Remove .db.enc suffix and the random hex (last 8 chars after hyphen)
+                base = name.rsplit(".db.enc", 1)[0]
+                parts = base.rsplit("-", 1)
+                if len(parts) == 2 and len(parts[1]) == 8:
+                    return parts[0]
+                return base
+            except Exception:
+                return name
+
+        return sorted(backup_files, key=extract_timestamp)
+
+    async def cleanup_old_backups(
+        self, user_id: str, user_token: Optional[str] = None
+    ) -> int:
+        """
+        Clean up old backups if user has MAX_BACKUPS or more .db.enc files.
+        Deletes oldest files until only KEEP_BACKUPS remain.
+
+        Args:
+            user_id: Supabase user UUID
+            user_token: User's JWT token for RLS policy evaluation
+
+        Returns:
+            Number of files deleted
+
+        Note:
+            This method catches all exceptions and logs them.
+            It never raises exceptions to ensure the presign_upload flow continues.
+        """
+        try:
+            # List all files in user's directory
+            files = self.repository.list_user_files(user_id, user_token)
+
+            # Filter to only .db.enc files (exclude latest.json and other files)
+            backup_files = [
+                f for f in files if f.get("name", "").endswith(".db.enc")
+            ]
+
+            # Check if cleanup is needed
+            if len(backup_files) < MAX_BACKUPS:
+                logger.debug(
+                    f"User {user_id} has {len(backup_files)} backups, no cleanup needed"
+                )
+                return 0
+
+            # Sort by timestamp (oldest first)
+            sorted_backups = self._sort_backups_by_timestamp(backup_files)
+
+            # Determine files to delete (all except the KEEP_BACKUPS most recent)
+            files_to_delete = sorted_backups[:-KEEP_BACKUPS]
+
+            # Build full paths and delete
+            paths_to_delete = [
+                f"{user_id}/{f.get('name')}" for f in files_to_delete
+            ]
+
+            logger.info(
+                f"Cleaning up {len(paths_to_delete)} old backups for user {user_id}"
+            )
+            self.repository.delete_files(paths_to_delete, user_token)
+
+            return len(paths_to_delete)
+
+        except Exception as e:
+            # Log error but don't fail the presign_upload request
+            logger.error(f"Failed to cleanup old backups for user {user_id}: {str(e)}")
+            return 0
+
     async def presign_upload(
         self, user_id: str, filename: str, user_token: Optional[str] = None
     ) -> PresignUploadRes:
@@ -100,6 +191,11 @@ class StorageService:
             raise HTTPException(
                 status_code=400, detail="Filename cannot contain slashes"
             )
+
+        # Clean up old backups before creating new one
+        deleted_count = await self.cleanup_old_backups(user_id, user_token)
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} old backups for user {user_id}")
 
         # Build paths
         data_path, latest_path = self.build_backup_paths(user_id, filename)
