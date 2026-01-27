@@ -45,26 +45,26 @@ class StorageRepository:
             result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(
                 path
             )
-            self.__check_for_errors_in_create_signed_upload_result(result)
+            needs_retry = self.__check_for_errors_in_create_signed_upload_result(result)
+            if needs_retry:
+                # File already exists - delete and retry
+                logger.info(f"File {path} already exists (from result) - deleting to allow overwrite")
+                self.delete_files([path], user_token)
+                result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(path)
+                self.__check_for_errors_in_create_signed_upload_result(result)
             return result
         except StorageException as e:
             error_detail = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
             error_message = str(error_detail.get("message", "")) if isinstance(error_detail, dict) else str(e)
             error_code = error_detail.get("error", error_detail.get("code", "Unknown")) if isinstance(error_detail, dict) else "Unknown"
 
-            # Handle "already exists" for latest.json - this is expected since we overwrite it
-            if (
-                error_code == "Duplicate"
-                or "already exists" in error_message.lower()
-            ) and path.endswith("latest.json"):
-                logger.info(
-                    f"File {path} already exists - this is expected for latest.json, returning upsert token"
-                )
-                # For existing files, use upsert mode by returning a special token
-                return {
-                    "token": "file_already_exists",
-                    "path": path,
-                }
+            # Handle "already exists" - delete and retry to allow overwrite
+            if error_code == "Duplicate" or "already exists" in error_message.lower():
+                logger.info(f"File {path} already exists (from exception) - deleting to allow overwrite")
+                self.delete_files([path], user_token)
+                result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(path)
+                self.__check_for_errors_in_create_signed_upload_result(result)
+                return result
             raise
 
     def object_exists(
@@ -264,11 +264,24 @@ class StorageRepository:
 
     def __check_for_errors_in_create_signed_upload_result(
         self, result: SignedUploadURL
-    ):
-        if result.get("error"):
-            error_detail = result.get("error", {})
-            error_message = error_detail.get("message", "Unknown error")
-            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+    ) -> bool:
+        """Check for errors in create_signed_upload_url result.
+
+        Returns:
+            True if "already exists" error (caller should delete and retry)
+            False if no error
+
+        Raises:
+            Exception for other errors
+        """
+        # Handle top-level error structure from Supabase
+        if result.get("error") or result.get("statusCode"):
+            error_message = str(result.get("message", "Unknown error"))
+            error_code = result.get("error", result.get("code", "Unknown"))
+
+            # Signal to caller to delete and retry for duplicate files
+            if error_code == "Duplicate" or "already exists" in error_message.lower():
+                return True
 
             if "row-level security policy" in error_message or "RLS" in error_message:
                 error_msg = (
@@ -278,7 +291,7 @@ class StorageRepository:
                     f"See the README or documentation for the required SQL."
                 )
             elif (
-                "does not exist" in error_message
+                "does not exist" in error_message.lower()
                 or error_code == "NoSuchBucket"
                 or error_code == "InvalidRequest"
             ):
@@ -292,3 +305,4 @@ class StorageRepository:
                 )
             logger.error(f"Storage error: {error_msg}")
             raise Exception(error_msg)
+        return False
