@@ -211,13 +211,9 @@ class StorageService:
             upload_result = self.repository.create_signed_upload_url(
                 data_path, user_token
             )
-            latest_result = {}
-            try:
-                latest_result = self.repository.create_signed_upload_url(
-                    latest_path, user_token
-                )
-            except Exception:
-                pass
+            latest_result = self.repository.create_signed_upload_url(
+                latest_path, user_token
+            )
 
             logger.debug(
                 f"Signed upload URLs created successfully - user_id: {user_id}"
