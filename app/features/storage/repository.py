@@ -42,13 +42,6 @@ class StorageRepository:
         )
 
         try:
-            exists, existing_url = self.object_exists(path, user_token)
-            if exists and existing_url:
-                logger.info(
-                    f"Object already exists for path: {path}; returning existing signed URL"
-                )
-                return existing_url
-
             result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(
                 path
             )
@@ -56,17 +49,18 @@ class StorageRepository:
             return result
         except StorageException as e:
             error_detail = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
-            error_message = error_detail.get("message", "Unknown error")
-            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+            error_message = str(error_detail.get("message", "")) if isinstance(error_detail, dict) else str(e)
+            error_code = error_detail.get("error", error_detail.get("code", "Unknown")) if isinstance(error_detail, dict) else "Unknown"
 
+            # Handle "already exists" for latest.json - this is expected since we overwrite it
             if (
                 error_code == "Duplicate"
                 or "already exists" in error_message.lower()
-                and path.endswith("latest.json")
-            ):
+            ) and path.endswith("latest.json"):
                 logger.info(
-                    f"File {path} already exists - this is expected for latest.json, returning success"
+                    f"File {path} already exists - this is expected for latest.json, returning upsert token"
                 )
+                # For existing files, use upsert mode by returning a special token
                 return {
                     "token": "file_already_exists",
                     "path": path,
