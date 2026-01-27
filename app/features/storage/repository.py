@@ -41,31 +41,19 @@ class StorageRepository:
             f"Creating signed upload URL for path: {path} in bucket: {self.bucket_name}"
         )
 
-        try:
-            result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(
-                path
-            )
-            needs_retry = self.__check_for_errors_in_create_signed_upload_result(result)
-            if needs_retry:
-                # File already exists - delete and retry
-                logger.info(f"File {path} already exists (from result) - deleting to allow overwrite")
+        # For files that may already exist (like latest.json), delete first to allow overwrite
+        # This is simpler and more reliable than detecting "already exists" errors
+        if path.endswith("latest.json"):
+            try:
+                logger.debug(f"Deleting existing {path} to allow overwrite")
                 self.delete_files([path], user_token)
-                result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(path)
-                self.__check_for_errors_in_create_signed_upload_result(result)
-            return result
-        except StorageException as e:
-            error_detail = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
-            error_message = str(error_detail.get("message", "")) if isinstance(error_detail, dict) else str(e)
-            error_code = error_detail.get("error", error_detail.get("code", "Unknown")) if isinstance(error_detail, dict) else "Unknown"
+            except Exception as e:
+                # File might not exist, that's fine
+                logger.debug(f"Could not delete {path} (may not exist): {e}")
 
-            # Handle "already exists" - delete and retry to allow overwrite
-            if error_code == "Duplicate" or "already exists" in error_message.lower():
-                logger.info(f"File {path} already exists (from exception) - deleting to allow overwrite")
-                self.delete_files([path], user_token)
-                result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(path)
-                self.__check_for_errors_in_create_signed_upload_result(result)
-                return result
-            raise
+        result = supabase.storage.from_(self.bucket_name).create_signed_upload_url(path)
+        self.__check_for_errors_in_create_signed_upload_result(result)
+        return result
 
     def object_exists(
         self, path: str, user_token: Optional[str] = None
@@ -264,45 +252,29 @@ class StorageRepository:
 
     def __check_for_errors_in_create_signed_upload_result(
         self, result: SignedUploadURL
-    ) -> bool:
+    ) -> None:
         """Check for errors in create_signed_upload_url result.
 
-        Returns:
-            True if "already exists" error (caller should delete and retry)
-            False if no error
-
         Raises:
-            Exception for other errors
+            Exception if result contains an error
         """
         # Handle top-level error structure from Supabase
+        # e.g., {'statusCode': 400, 'error': 'Duplicate', 'message': 'The resource already exists'}
         if result.get("error") or result.get("statusCode"):
             error_message = str(result.get("message", "Unknown error"))
             error_code = result.get("error", result.get("code", "Unknown"))
 
-            # Signal to caller to delete and retry for duplicate files
-            if error_code == "Duplicate" or "already exists" in error_message.lower():
-                return True
-
             if "row-level security policy" in error_message or "RLS" in error_message:
                 error_msg = (
                     f"RLS policy violation: {error_message}. "
-                    f"You need to create RLS policies on storage.objects table. "
-                    f"Go to Supabase Dashboard > SQL Editor and run the policies SQL. "
-                    f"See the README or documentation for the required SQL."
+                    f"Check storage RLS policies in Supabase Dashboard."
                 )
-            elif (
-                "does not exist" in error_message.lower()
-                or error_code == "NoSuchBucket"
-                or error_code == "InvalidRequest"
-            ):
+            elif error_code == "NoSuchBucket" or error_code == "InvalidRequest":
                 error_msg = (
-                    f"Bucket '{self.bucket_name}' does not exist or is not accessible. "
-                    f"Please verify it exists in Supabase Dashboard: Storage > Buckets"
+                    f"Bucket '{self.bucket_name}' does not exist or is not accessible."
                 )
             else:
-                error_msg = (
-                    f"Error creating upload token: {error_message} (code: {error_code})"
-                )
+                error_msg = f"Storage error: {error_message} (code: {error_code})"
+
             logger.error(f"Storage error: {error_msg}")
             raise Exception(error_msg)
-        return False
