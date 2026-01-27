@@ -71,6 +71,7 @@ class StorageRepository:
                     "token": "file_already_exists",
                     "path": path,
                 }
+            raise
 
     def object_exists(
         self, path: str, user_token: Optional[str] = None
@@ -104,14 +105,15 @@ class StorageRepository:
         if not probe:
             return False, None
 
-        if probe.get("error"):
-            error_detail = probe.get("error", {})
-            error_message = error_detail.get("message", "Unknown error")
-            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+        # Supabase returns error info at top level: {'statusCode': 404, 'error': 'not_found', 'message': 'Object not found'}
+        if probe.get("error") or probe.get("statusCode"):
+            error_message = probe.get("message", "Unknown error")
+            error_code = probe.get("error", probe.get("code", "Unknown"))
             if (
                 error_code == "NoSuchKey"
-                or "does not exist" in error_message
-                or "not found" in error_message.lower()
+                or error_code == "not_found"
+                or "does not exist" in str(error_message).lower()
+                or "not found" in str(error_message).lower()
             ):
                 logger.info(f"Object does not exist at path: {path}")
                 return False, None
@@ -136,10 +138,10 @@ class StorageRepository:
         result = supabase.storage.from_(self.bucket_name).create_signed_url(
             path=path, expires_in=expires_in
         )
-        if result.get("error"):
-            error_detail = result.get("error", {})
-            error_message = error_detail.get("message", "Unknown error")
-            error_code = error_detail.get("error", error_detail.get("code", "Unknown"))
+        # Supabase returns error info at top level: {'statusCode': 404, 'error': 'not_found', 'message': 'Object not found'}
+        if result.get("error") or result.get("statusCode"):
+            error_message = str(result.get("message", "Unknown error"))
+            error_code = result.get("error", result.get("code", "Unknown"))
             if "row-level security policy" in error_message or "RLS" in error_message:
                 error_msg = (
                     f"RLS policy violation: {error_message}. "
@@ -147,16 +149,16 @@ class StorageRepository:
                     f"Go to Supabase Dashboard > SQL Editor and run the policies SQL. "
                     f"See the README or documentation for the required SQL."
                 )
-            elif (
-                "does not exist" in error_message
-                or error_code == "NoSuchBucket"
-                or error_code == "InvalidRequest"
-            ):
+            elif error_code == "NoSuchBucket" or error_code == "InvalidRequest":
                 error_msg = (
                     f"Bucket '{self.bucket_name}' does not exist or is not accessible. "
                     f"Please verify it exists in Supabase Dashboard: Storage > Buckets"
                 )
-            elif error_code == "NoSuchKey":
+            elif (
+                error_code == "NoSuchKey"
+                or error_code == "not_found"
+                or "not found" in error_message.lower()
+            ):
                 error_msg = f"File not found at path: {path}"
             else:
                 error_msg = (
